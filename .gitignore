@@ -1,0 +1,17 @@
+# Large binary files (don't commit to GitHub)
+resources/zims/*.zim
+resources/models/*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+*.swp
+*~
+
+# User-specific
+.vscode/
+.idea/

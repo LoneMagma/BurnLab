@@ -1,0 +1,9 @@
+# BurnLab Custom Additions
+
+# Aliases
+alias lab-update='cd ~/BurnLab && git pull && sudo ./scripts/install.sh'
+alias lab-status='ollama list && ls ~/zims/'
+
+# Welcome message
+echo -e "\033[1;32mBurnLab v1.0\033[0m - Offline AI Dev Lab"
+echo "Type: ask \"your question\""

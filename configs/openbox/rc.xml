@@ -1,0 +1,30 @@
+<!-- Add to <keyboard> section -->
+<keybind key="W-t">
+  <action name="Execute">
+    <command>lxterminal</command>
+  </action>
+</keybind>
+<keybind key="W-c">
+  <action name="Execute">
+    <command>code</command>
+  </action>
+</keybind>
+```
+
+**configs/conky/burnlab.conf**:
+```
+conky.config = {
+    alignment = 'top_right',
+    background = true,
+    default_color = 'white',
+    own_window = true,
+}
+
+conky.text = [[
+${color lightblue}BurnLab v1.0${color}
+${hr}
+AI: ${execi 3600 ollama list | grep qwen | awk '{print $1}'}
+ZIMs: ${execi 3600 ls ~/zims/*.zim | wc -l} loaded
+${hr}
+Usage: ask "your question"
+]]
