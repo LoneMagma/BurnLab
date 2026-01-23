@@ -68,14 +68,34 @@ if [[ "$FREE_SPACE" -lt "$MIN_FREE" ]]; then
 fi
 
 if [[ "$MODE" == "FILE" ]]; then
-    MOUNT_POINT="/run/live/medium"
-    if [[ ! -w "$MOUNT_POINT" ]]; then
-         # Try to remount RW
-         sudo mount -o remount,rw "$MOUNT_POINT" || error "Cannot write to USB (Read-Only filesystem)."
+    # Fix: Do not use /run/live/medium as it is often read-only (loopback).
+    # Instead, mount the physical partition (sdb1) directly.
+    
+    # Assuming standard Ventoy layout: Partition 1 is the Data partition.
+    DATA_PART="${USB_DEV}1"
+    TEMP_MOUNT="/mnt/ventoy_rw"
+    
+    log "Mounting physical partition $DATA_PART to $TEMP_MOUNT..."
+    sudo mkdir -p "$TEMP_MOUNT"
+    
+    # Try mounting. If fails (e.g. exFAT/NTFS needs helpers), try generic mount.
+    if ! sudo mount "$DATA_PART" "$TEMP_MOUNT"; then
+        warn "Standard mount failed. Trying to force rw..."
+        # Sometimes it's already mounted read-only by the system at /run/live/medium.
+        # We can't remount check, so we just try to mount it elsewhere.
+        error "Could not mount $DATA_PART. Is the filesystem corrupt or hibernated?"
     fi
 
+    # Check for write access
+    if [[ ! -w "$TEMP_MOUNT" ]]; then
+        # Try remounting RW
+        sudo mount -o remount,rw "$TEMP_MOUNT" || error "Partition $DATA_PART is read-only."
+    fi
+
+    BACKEND_FILE="$TEMP_MOUNT/persistence.dat"
+
     # Calculate size (Use available space on the partition minus 1GB buffer)
-    AVAIL_KB=$(df -k "$MOUNT_POINT" | tail -1 | awk '{print $4}')
+    AVAIL_KB=$(df -k "$TEMP_MOUNT" | tail -1 | awk '{print $4}')
     # Convert to GB (roughly)
     AVAIL_GB=$((AVAIL_KB / 1024 / 1024))
     FILE_SIZE_GB=$((AVAIL_GB - 1))
@@ -87,17 +107,20 @@ if [[ "$MODE" == "FILE" ]]; then
     # Cap at 32GB to be safe/fast
     if [[ "$FILE_SIZE_GB" -gt 32 ]]; then FILE_SIZE_GB=32; fi
 
-    log "Creating ${FILE_SIZE_GB}GB persistence file at $BACKEND_FILE..."
-    # Faster allocation
-    sudo fallocate -l "${FILE_SIZE_GB}G" "$BACKEND_FILE" || \
+    log "Creates ${FILE_SIZE_GB}GB persistence file at $BACKEND_FILE..."
+    
+    # Use dd if fallocate isn't supported on exFAT (common on Ventoy)
+    if ! sudo fallocate -l "${FILE_SIZE_GB}G" "$BACKEND_FILE" 2>/dev/null; then
+        log "fallocate not supported (exFAT?), using dd (this will take time)..."
         sudo dd if=/dev/zero of="$BACKEND_FILE" bs=1M count=$((FILE_SIZE_GB * 1024)) status=progress
+    fi
 
     log "Formatting persistence file..."
     # Loop setup
     LOOP_DEV=$(sudo losetup -fP --show "$BACKEND_FILE")
     sudo mkfs.btrfs -f -L persistence "$LOOP_DEV"
     
-    # Configure Persistence
+    # Configure Persistence inside the BTRFS container
     sudo mkdir -p /mnt/persist_temp
     sudo mount "$LOOP_DEV" /mnt/persist_temp
     echo "/ union" | sudo tee /mnt/persist_temp/persistence.conf
@@ -105,12 +128,16 @@ if [[ "$MODE" == "FILE" ]]; then
     sudo losetup -d "$LOOP_DEV"
 
     # Configure Ventoy JSON
-    VENTOY_DIR="$MOUNT_POINT/ventoy"
+    VENTOY_DIR="$TEMP_MOUNT/ventoy"
     sudo mkdir -p "$VENTOY_DIR"
-    ISO_FILE=$(ls "$MOUNT_POINT" | grep -i "\.iso$" | head -1) || true
+    
+    # Find the ISO file (usually in root or nested)
+    # We look in the root of the mounted drive
+    ISO_FILE=$(ls "$TEMP_MOUNT" | grep -i "\.iso$" | head -1) || true
     
     if [[ -z "$ISO_FILE" ]]; then
-        warn "Could not auto-detect ISO filename. You may need to edit ventoy.json manually."
+        warn "Could not auto-detect ISO filename in root of USB."
+        warn "You may need to edit /ventoy/ventoy.json manually on the drive."
         ISO_FILE="bunsenlabs.iso"
     fi
     
@@ -127,7 +154,13 @@ if [[ "$MODE" == "FILE" ]]; then
     ]
 }
 EOF
+    
+    log "Unmounting..."
+    sudo umount "$TEMP_MOUNT"
+    
     log "✅ Ventoy File-Based Persistence Configured!"
+    log "Please REBOOT now."
+    exit 0
     
 else
     # PARTITION MODE (Legacy/Standard)
