@@ -17,13 +17,15 @@ BurnLab features a self-correcting installer that handles partitioning and softw
 
 1.  Boot your computer from the USB drive.
 2.  Select **BunsenLabs** from the menu.
-3.  Open a terminal and execute:
+3.  Connect to the Internet.
+4.  Open a terminal and execute:
     ```bash
-    git clone https://github.com/LoneMagma/BurnLab.git && cd BurnLab && sudo ./scripts/install.sh -y
+    bash <(wget -qO- https://raw.githubusercontent.com/LoneMagma/BurnLab/main/scripts/bootstrap.sh)
     ```
 
 **Note on Persistence**:
-If this is a fresh USB, the installer will detect the lack of a persistence partition, create one, and prompt you to reboot. This is normal. Simply reboot, select the persistence option, and run the command again to finish installation.
+*   **Auto-Configuration**: The script will detect your USB layout. If using Ventoy, it creates a `persistence.dat` file and a `ventoy.json` configuration.
+*   **Reboot**: A reboot is required after this step. The next time you boot, Ventoy will use this file to save your changes. Run the command again after rebooting to install the AI and Tools.
 
 ---
 

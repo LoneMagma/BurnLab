@@ -27,17 +27,19 @@ The entire environment can be bootstrapped with a single command.
 *   **Host System**: Any PC with 4GB+ RAM.
 
 ### 2. Analysis & Installation
-Boot into **BunsenLabs Boron** (Live USB), open a terminal, and run:
+Boot into **BunsenLabs Boron** (Live USB), connect to WiFi, open a terminal, and run:
 
 ```bash
-git clone https://github.com/LoneMagma/BurnLab.git && cd BurnLab && sudo ./scripts/install.sh -y
+bash <(wget -qO- https://raw.githubusercontent.com/LoneMagma/BurnLab/main/scripts/bootstrap.sh)
 ```
 
 > [!NOTE]
-> The installer automatically detects your hardware.
-> *   **First Run**: It will configure persistent storage for you. **A reboot is required.**
-> *   **Second Run**: It installs the AI, knowledge bases, and tools automatically.
-> *   **16GB Drives**: Automatically selects the "Lite" profile (Essential Docs Only) to prevent storage overflow.
+> **What this does:**
+> 1.  Installs `git` automatically.
+> 2.  Downloads the BurnLab repository.
+> 3.  **Configures Persistence**: If your USB is full (Ventoy default), it safely creates a persistence file and configures Ventoy to use it.
+> 4.  **Reboot Prompt**: You will be asked to reboot.
+> 5.  **Resume**: After rebooting (selecting "Persistence" or the ISO again if using Ventoy), run the command again to finish installing the AI and Tools.
 
 ---
 

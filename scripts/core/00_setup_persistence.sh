@@ -43,54 +43,119 @@ USB_DEV=$(lsblk -ndo NAME,TRAN | awk '$2=="usb" {print "/dev/"$1}' | head -1)
 log "Found USB device: $USB_DEV"
 lsblk "$USB_DEV"
 
-# Dynamic Calculation
-log "Calculating partition sizes..."
-TOTAL_SIZE_BYTES=$(lsblk -bno SIZE "$USB_DEV" | head -1)
-# Reserve 4GB for System/ISO (Ventoy needs some, ISO needs ~2.5GB)
-RESERVE_BYTES=$((4 * 1024 * 1024 * 1024))
-PERSIST_SIZE_BYTES=$((TOTAL_SIZE_BYTES - RESERVE_BYTES))
+# Check if enough unallocated space exists for standard partitioning
+# We need at least 6GB of UNALLOCATED space at the end of the drive.
+# If sdb1 takes up 100% of space, we must use File-Based Persistence (Ventoy method).
 
-if [[ $PERSIST_SIZE_BYTES -lt $((2 * 1024 * 1024 * 1024)) ]]; then
-    error "Not enough space for persistence. Need at least 6GB total USB size."
+BACKEND_FILE="/run/live/medium/persistence.dat"
+
+if [[ -f "$BACKEND_FILE" ]]; then
+    log "Existing persistence file found."
+    # Check if it's already configured? 
+    # Just proceed to tell user to validify it.
 fi
 
-# Convert to MB for display
-PERSIST_MB=$((PERSIST_SIZE_BYTES / 1024 / 1024))
-log "Total USB: $((TOTAL_SIZE_BYTES / 1024 / 1024 / 1024))GB"
-log "Reserving: 4GB for System"
-log "Persistence Partition: ~${PERSIST_MB}MB"
+# Check if we can partition (Naive check: is the last partition end < disk size - 5GB?)
+LAST_PART_END=$(sudo parted -s "$USB_DEV" unit B print | grep -v "^$" | tail -1 | awk '{print $3}' | tr -d 'B')
+DISK_SIZE=$(lsblk -bno SIZE "$USB_DEV" | head -1)
+FREE_SPACE=$((DISK_SIZE - LAST_PART_END))
+MIN_FREE=$((5 * 1024 * 1024 * 1024))
 
-# Get last partition number to append
-LAST_PART=$(lsblk -no NAME "$USB_DEV" | tail -1 | grep -o '[0-9]*$')
-NEXT_PART=$((LAST_PART + 1))
-PERSIST_PART="${USB_DEV}${NEXT_PART}"
+MODE="PARTITION"
+if [[ "$FREE_SPACE" -lt "$MIN_FREE" ]]; then
+    log "Drive is fully allocated (Ventoy Default). Switching to File-Based Persistence."
+    MODE="FILE"
+fi
 
-log "Creating partition ${PERSIST_PART}..."
-# Use 100% to fill the rest of the disk, starting from where the previous ended?
-# Ventoy usually puts data at the end or beginning. Safe bet with parted 'mkpart' using percentages if free space is at end.
-# However, Ventoy is tricky. It usually has Part1 (exFAT data), Part2 (EFI).
-# We want to create Part 3 in the free space.
-# We will trust Parted to find the free space if we say 'Start of free space' to '100%'.
-# BUT, we need to be careful not to overwrite Part 1 if it thinks it's full.
-# Best approach for Ventoy: Use the 'F4 Localdisk' plugin logic manually or just append.
-# We will use valid "print free" logic or just append to end of disk.
+if [[ "$MODE" == "FILE" ]]; then
+    MOUNT_POINT="/run/live/medium"
+    if [[ ! -w "$MOUNT_POINT" ]]; then
+         # Try to remount RW
+         sudo mount -o remount,rw "$MOUNT_POINT" || error "Cannot write to USB (Read-Only filesystem)."
+    fi
 
-# Simplest reliable method for appended partition:
-sudo parted -s "$USB_DEV" -- mkpart primary btrfs "${RESERVE_BYTES}B" 100% || \
-    error "Partition creation failed. Disk setup might be non-standard."
+    # Calculate size (Use available space on the partition minus 1GB buffer)
+    AVAIL_KB=$(df -k "$MOUNT_POINT" | tail -1 | awk '{print $4}')
+    # Convert to GB (roughly)
+    AVAIL_GB=$((AVAIL_KB / 1024 / 1024))
+    FILE_SIZE_GB=$((AVAIL_GB - 1))
+    
+    if [[ "$FILE_SIZE_GB" -lt 4 ]]; then
+        error "Not enough space on USB drive for persistence file. Need 4GB+, have ${AVAIL_GB}GB."
+    fi
+    
+    # Cap at 32GB to be safe/fast
+    if [[ "$FILE_SIZE_GB" -gt 32 ]]; then FILE_SIZE_GB=32; fi
 
-# Reload partition table
-sudo partprobe "$USB_DEV" || true
-sleep 3
+    log "Creating ${FILE_SIZE_GB}GB persistence file at $BACKEND_FILE..."
+    # Faster allocation
+    sudo fallocate -l "${FILE_SIZE_GB}G" "$BACKEND_FILE" || \
+        sudo dd if=/dev/zero of="$BACKEND_FILE" bs=1M count=$((FILE_SIZE_GB * 1024)) status=progress
 
-# Format with compression
-log "Formatting with btrfs (zstd:15 compression)..."
-sudo mkfs.btrfs -f -L persistence "$PERSIST_PART"
+    log "Formatting persistence file..."
+    # Loop setup
+    LOOP_DEV=$(sudo losetup -fP --show "$BACKEND_FILE")
+    sudo mkfs.btrfs -f -L persistence "$LOOP_DEV"
+    
+    # Configure Persistence
+    sudo mkdir -p /mnt/persist_temp
+    sudo mount "$LOOP_DEV" /mnt/persist_temp
+    echo "/ union" | sudo tee /mnt/persist_temp/persistence.conf
+    sudo umount /mnt/persist_temp
+    sudo losetup -d "$LOOP_DEV"
 
-# Mount and configure
-sudo mkdir -p /mnt/persist
-sudo mount -o compress=zstd:15 "$PERSIST_PART" /mnt/persist
-echo "/ union" | sudo tee /mnt/persist/persistence.conf
-sudo umount /mnt/persist
+    # Configure Ventoy JSON
+    VENTOY_DIR="$MOUNT_POINT/ventoy"
+    sudo mkdir -p "$VENTOY_DIR"
+    ISO_FILE=$(ls "$MOUNT_POINT" | grep -i "\.iso$" | head -1) || true
+    
+    if [[ -z "$ISO_FILE" ]]; then
+        warn "Could not auto-detect ISO filename. You may need to edit ventoy.json manually."
+        ISO_FILE="bunsenlabs.iso"
+    fi
+    
+    JSON_FILE="$VENTOY_DIR/ventoy.json"
+    log "Creating $JSON_FILE configuration..."
+    
+    cat <<EOF | sudo tee "$JSON_FILE"
+{
+    "persistence": [
+        {
+            "image": "/$ISO_FILE",
+            "backend": "/persistence.dat"
+        }
+    ]
+}
+EOF
+    log "✅ Ventoy File-Based Persistence Configured!"
+    
+else
+    # PARTITION MODE (Legacy/Standard)
+    
+    TOTAL_SIZE_BYTES=$(lsblk -bno SIZE "$USB_DEV" | head -1)
+    # Reserve 4GB for System/ISO (Ventoy needs some, ISO needs ~2.5GB)
+    RESERVE_BYTES=$((4 * 1024 * 1024 * 1024))
+    
+    log "Creating partition at end of disk..."
+    sudo parted -s "$USB_DEV" -- mkpart primary btrfs "${RESERVE_BYTES}B" 100% || \
+        error "Partition creation failed."
 
-log "✅ Persistence configured!"
+    # Reload partition table
+    sudo partprobe "$USB_DEV" || true
+    sleep 3
+
+    # Format with compression
+    # Find the new partition (likely the last one)
+    NEW_PART=$(lsblk -no NAME,PATH "$USB_DEV" | tail -1 | awk '{print $2}')
+    
+    log "Formatting $NEW_PART with btrfs..."
+    sudo mkfs.btrfs -f -L persistence "$NEW_PART"
+
+    # Mount and configure
+    sudo mkdir -p /mnt/persist
+    sudo mount -o compress=zstd:15 "$NEW_PART" /mnt/persist
+    echo "/ union" | sudo tee /mnt/persist/persistence.conf
+    sudo umount /mnt/persist
+
+    log "✅ Partition-Based Persistence Configured!"
+fi
